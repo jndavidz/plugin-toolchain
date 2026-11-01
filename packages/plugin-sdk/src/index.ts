@@ -251,6 +251,9 @@ export interface MusicUrlHandlerOptions {
   fallbackSearch?: (hint: MusicUrlFallbackHint) => Promise<FallbackMatch | null>;
 }
 
+/** 播放链路防御归一的默认档位（musicdl native 拼写）：非法/越权 hint 一律落到 320k */
+export const DEFENSIVE_QUALITY_TIER = '320k';
+
 /**
  * 音质档位 hint 的防御归一（spec: songloft .scratch/audio-quality-routing D1）。
  *
@@ -258,7 +261,7 @@ export interface MusicUrlHandlerOptions {
  * （low/standard/high/super），原样透传（归一/192k snap/per-source 白名单由
  * 上游 kwqq-api 的 quality.py 单点完成，插件不复制映射）。
  * 非法/越权值（auto、无损档 flac/hires/master/surround51、垃圾值）防御归一为
- * '320k'——宁可降档不可断播放；空值回落 [fallback]（调用方的插件自定默认档）。
+ * [DEFENSIVE_QUALITY_TIER]——宁可降档不可断播放；空值回落 [fallback]（调用方的插件自定默认档）。
  */
 export function resolveQualityHint(
   raw: string | undefined,
@@ -267,7 +270,7 @@ export function resolveQualityHint(
   const v = (raw ?? '').trim().toLowerCase();
   if (!v) return fallback;
   const legal = new Set(['128k', '192k', '320k', 'low', 'standard', 'high', 'super']);
-  return legal.has(v) ? v : '320k';
+  return legal.has(v) ? v : DEFENSIVE_QUALITY_TIER;
 }
 
 /**
