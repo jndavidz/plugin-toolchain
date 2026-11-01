@@ -220,13 +220,27 @@ export type ResolvedMusicUrl =
   | string
   | { url: string; headers?: Record<string, string> };
 
+/** resolveUrl 的调用上下文 */
+export interface MusicUrlResolveContext {
+  /**
+   * 播放链路的音质档位 hint（musicdl native 拼写,如 320k）。
+   * 播放路径由主程序下发;缓存下载/元数据探测路径缺省(undefined)。
+   * 用 [resolveQualityHint] 做防御归一后向上游索取,不足降档由上游单点完成。
+   */
+  quality?: string;
+}
+
 /** music_url handler 配置 */
 export interface MusicUrlHandlerOptions {
   /**
    * 用 source_data 解析真实播放 URL。失败抛错。
+   * 第二参 [MusicUrlResolveContext] 携带播放档位 hint,可整体忽略（旧单参插件兼容）。
    * 返回 string 或 { url, headers }(headers 会被主程序在代理/下载时应用)。
    */
-  resolveUrl: (sourceData: Record<string, unknown>) => Promise<ResolvedMusicUrl>;
+  resolveUrl: (
+    sourceData: Record<string, unknown>,
+    context?: MusicUrlResolveContext,
+  ) => Promise<ResolvedMusicUrl>;
   /**
    * 可选的"插件内自搜"。当 resolveUrl 失败且 hint.enabled=true 时被调用,
    * 返回最匹配的新 source_data。返回 null 表示放弃。
@@ -238,11 +252,31 @@ export interface MusicUrlHandlerOptions {
 }
 
 /**
+ * 音质档位 hint 的防御归一（spec: songloft .scratch/audio-quality-routing D1）。
+ *
+ * 合法集 = musicdl native 拼写（128k/192k/320k）+ MusicFree 四档别名
+ * （low/standard/high/super），原样透传（归一/192k snap/per-source 白名单由
+ * 上游 kwqq-api 的 quality.py 单点完成，插件不复制映射）。
+ * 非法/越权值（auto、无损档 flac/hires/master/surround51、垃圾值）防御归一为
+ * '320k'——宁可降档不可断播放；空值回落 [fallback]（调用方的插件自定默认档）。
+ */
+export function resolveQualityHint(
+  raw: string | undefined,
+  fallback: string,
+): string {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (!v) return fallback;
+  const legal = new Set(['128k', '192k', '320k', 'low', 'standard', 'high', 'super']);
+  return legal.has(v) ? v : '320k';
+}
+
+/**
  * 创建符合主程序约定的 POST /api/music/url handler。
  *
  * Request body:
  *   {
  *     source_data: object,       // 必填
+ *     quality?: string,          // 可选,播放链路的音质档位 hint(musicdl native 拼写)
  *     fallback?: {                // 可选,主程序在主源失败时下发
  *       enabled: boolean,
  *       title: string,
@@ -255,6 +289,7 @@ export interface MusicUrlHandlerOptions {
  *   {
  *     url: string,                          // 真实 CDN URL
  *     headers?: object,                     // 主程序拉取该 URL 时需携带的自定义头(如 Referer / User-Agent)
+ *     bitrate_kbps?: number,                // 可选,上游实测码率(如实透传,主程序仅日志)
  *     source_data?: object,                 // 若 fallback 触发,返回新的 source_data
  *     used_fallback?: boolean
  *   }
@@ -263,10 +298,10 @@ export interface MusicUrlHandlerOptions {
  *   { error: 'source_not_available' }
  *
  * 链路:
- *   1. 用入参 source_data 调 resolveUrl;成功 → 返回 url
+ *   1. 用入参 source_data 调 resolveUrl(source_data, { quality });成功 → 返回 url
  *   2. 失败且 fallback.enabled=true 且配置了 fallbackSearch:
  *      → 调 fallbackSearch(hint) 拿新 source_data
- *      → 再调 resolveUrl(new source_data)
+ *      → 再调 resolveUrl(new source_data, { quality })
  *      → 成功返回 { url, source_data: new, used_fallback: true }
  *   3. 全失败 → 404 source_not_available
  */
@@ -284,10 +319,13 @@ export function createMusicUrlHandler(opts: MusicUrlHandlerOptions): RouteHandle
     if (!sourceData || typeof sourceData !== 'object') {
       return jsonResponse({ error: 'source_data is required' }, 400);
     }
+    // 播放链路音质档位 hint（native 拼写,如 320k）;缺省 = 插件自定默认。
+    const quality = typeof body.quality === 'string' ? body.quality : undefined;
+    const resolveContext = { quality };
 
     // 1. 主路径:直接 resolveUrl(source_data)
     try {
-      const norm = normalizeMusicUrl(await opts.resolveUrl(sourceData));
+      const norm = normalizeMusicUrl(await opts.resolveUrl(sourceData, resolveContext));
       if (norm.url) {
         return jsonResponse(
           norm.headers ? { url: norm.url, headers: norm.headers } : { url: norm.url },
@@ -303,7 +341,7 @@ export function createMusicUrlHandler(opts: MusicUrlHandlerOptions): RouteHandle
       try {
         const match = await opts.fallbackSearch(hint);
         if (match && match.source_data) {
-          const norm = normalizeMusicUrl(await opts.resolveUrl(match.source_data));
+          const norm = normalizeMusicUrl(await opts.resolveUrl(match.source_data, resolveContext));
           if (norm.url) {
             const resp: Record<string, unknown> = {
               url: norm.url,

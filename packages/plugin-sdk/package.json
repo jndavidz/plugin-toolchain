@@ -1,6 +1,6 @@
 {
   "name": "@songloft/plugin-sdk",
-  "version": "2.18.0",
+  "version": "2.19.0",
   "description": "TypeScript SDK for Songloft JS plugin development",
   "type": "module",
   "exports": {
@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "echo \"no tests yet\" && exit 0",
+    "test": "node --import ./test/register-ts-loader.mjs --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
